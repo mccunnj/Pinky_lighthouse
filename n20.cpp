@@ -52,9 +52,14 @@ void ARDUINO_ISR_ATTR onTimer() {
   portENTER_CRITICAL_ISR(&timerMux);
   int direction = motorParams.currentDirection ? MOTOR_IN1 : MOTOR_IN2;
   int breaking = motorParams.currentDirection ? MOTOR_IN2 : MOTOR_IN1;
+  
   if (!motorParams.running) {
     if(motorParams.timerCounter <= motorParams.timerDuty){
-      
+
+      // int pwmValue = ledcRead(motorParams.currentDirection ? M1Channel : M2Channel);
+      // Serial.print("TimerPwmValue:");
+      // Serial.println(pwmValue);
+
       ledcWrite(breaking, 0);  // Ensure the other direction is off
       ledcWrite(direction, 128);
       motorParams.running = true;
@@ -74,7 +79,7 @@ void ARDUINO_ISR_ATTR onTimer() {
   portEXIT_CRITICAL_ISR(&timerMux);
   // Give a semaphore that we can check in the loop
   xSemaphoreGiveFromISR(timerSemaphore, NULL);
-  if (motorParams.timerCounter >= 115) {
+  if (motorParams.timerCounter >= 200) {
     motorParams.timerCounter = 0;
   }
 }
@@ -99,7 +104,7 @@ void setupN20(){
   timer = timerBegin(1000000);
   timerStop(timer);
   timerAttachInterrupt(timer, &onTimer);  // Attach onTimer function
-  timerAlarm(timer, 1000, true, 0);  
+  timerAlarm(timer, 500, true, 0);  
 }
 
 void printEncoderCount() {
@@ -120,20 +125,21 @@ void motorControl(bool dir, int speed){
     int breaking = dir ? MOTOR_IN2 : MOTOR_IN1;
     motorParams.motorSpeedCmd = speed;
     static bool timerPaused = true;
-    if((speed >= 90 || speed == 0) && !timerPaused){
+    if((speed >= 128 || speed == 0) && !timerPaused){
       timerStop(timer);
       timerWrite(timer, 0);
       timerPaused = true;
     }
     // Speed must be between 0 and 255
     if(speed <= 255 && speed >= 1){
-      ledcWrite(breaking, 0);  // Ensure the other direction is off
-      if(speed <= 255 && speed >= 90){
+      
+      if(speed <= 255 && speed >= 128){
+        ledcWrite(breaking, 0);  // Ensure the other direction is off
         ledcWrite(direction, speed);
       }
       // USE FakePWM
       else{
-        int duty = map(speed, 1, 90, 25, 115);
+        int duty = map(speed, 1, 127, 25, 199);
         if(timerPaused){
           timerStart(timer);
           timerPaused = false;
@@ -149,16 +155,23 @@ void motorControl(bool dir, int speed){
           Serial.print(" ");
         }
         else{
-          Serial.println("Semaphore Failed");
+          Serial.println("Speed Setting Semaphore Failed");
         }
       }
     }
     else if(speed == 0){
       if(!timerPaused){
-        timerStop(timer);
-        timerWrite(timer, 0);
-        timerPaused = true;
-        motorParams.running = false;
+        if (xSemaphoreTake(timerSemaphore, pdMS_TO_TICKS(100)) == pdTRUE) {
+          portENTER_CRITICAL(&timerMux);
+          timerStop(timer);
+          timerWrite(timer, 0);
+          timerPaused = true;
+          motorParams.running = false;
+          portEXIT_CRITICAL(&timerMux);
+          xSemaphoreGive(timerSemaphore);  // Release the semaphore
+        } else {
+          Serial.println("Pause Semaphore Failed to Take");
+        }
       }
       ledcWrite(breaking, 255);
       ledcWrite(direction, 255);
@@ -204,6 +217,10 @@ void setSpeeds(){
           Serial.println(minSpeed);
           break;
         }
+        else if(elapsedTime > 2000){
+          Serial.println("Unstable Acceleration");
+          break;
+        }
         distance = currentCount - prevCount;
         prevCount = currentCount;
         if ( abs(distance - prevDistance < 10)){
@@ -215,9 +232,9 @@ void setSpeeds(){
         prevDistance = distance;
         if (stableCountDuration >= 1000){
           //Done Accelerating
-          Serial.print("Acceleration took ");
-          Serial.print(elapsedTime);
-          Serial.print(" ms. ");
+          // Serial.print("Acceleration took ");
+          // Serial.print(elapsedTime);
+          // Serial.print(" ms. ");
           accelerating = false;
         }
       }
@@ -229,6 +246,7 @@ void setSpeeds(){
         motorControl(dir, 0);
         average += abs(finish);
         variance += finish;
+        variance = abs(variance);
         Serial.print(dir ? "Forward:" : "Reverse:");
         Serial.print(finish);
         Serial.print(" ");
@@ -242,16 +260,19 @@ void setSpeeds(){
         }
       }
     }
+    Serial.print(" Variance:");
+    Serial.print(variance);
     Serial.print(" Average:");
     Serial.print(average/2);
-    Serial.print(" Variance:");
-    Serial.print(variance/2);
     double rotationDegrees = (double(average) / 2 / 14316.0) * 360.0;
     Serial.print(" Degrees/sec: ");
     Serial.println(rotationDegrees);
   }
+  // End Test
   Serial.print("Minimum test speed: ");
   Serial.println(minSpeed);
+  ledcWrite(MOTOR_IN1, 0);
+  ledcWrite(MOTOR_IN2, 0);
 }
 
 // Constants for the number of tests and speeds
